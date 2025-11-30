@@ -147,6 +147,15 @@ public final class CalendarDataManager {
         )
     }
 
+    public func deleteEvents(eventIDs: [String]) async throws {
+        try await ensureAccess()
+        for id in eventIDs {
+            if let ekEvent = eventStore.event(withIdentifier: id) {
+                try eventStore.remove(ekEvent, span: .thisEvent)
+            }
+        }
+    }
+
     public func openCalendar(at date: Date?) {
         #if os(macOS)
         let appURL = URL(fileURLWithPath: "/System/Applications/Calendar.app")

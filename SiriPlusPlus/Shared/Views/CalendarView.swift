@@ -1,5 +1,6 @@
 import SwiftUI
 import EventKit
+import Combine
 #if os(macOS)
 import AppKit
 #endif
@@ -7,6 +8,7 @@ import AppKit
 public struct CalendarView: View {
     @ObservedObject var viewModel: CalendarViewModel
     @State private var showCreateSheet = false
+    @State private var now: Date = Date()
     @State private var newTitle: String = ""
     @State private var newStartDate: Date = Date()
     @State private var newDurationMinutes: Double = 30
@@ -27,6 +29,16 @@ public struct CalendarView: View {
     }
 
     public var body: some View {
+        ZStack {
+            mainContent
+            if showCreateSheet {
+                createOverlay
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: showCreateSheet)
+    }
+
+    private var mainContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
 
@@ -57,9 +69,7 @@ public struct CalendarView: View {
         .task {
             await viewModel.loadCalendarEvents()
         }
-        .sheet(isPresented: $showCreateSheet) {
-            createSheet
-        }
+        .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { now = $0 }
         .task {
             await viewModel.loadCalendars()
             selectedCalendar = viewModel.availableCalendars.first
@@ -94,12 +104,13 @@ public struct CalendarView: View {
                 ForEach(viewModel.events) { event in
                     eventBlock(for: event)
                 }
+                currentTimeIndicator
             }
-            .frame(height: hourHeight * CGFloat(hourMarkers.count))
+            .frame(height: timelineHeight)
             .padding(10)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-        .frame(height: hourHeight * CGFloat(hourMarkers.count))
+        .frame(height: timelineHeight)
     }
 
     private var actions: some View {
@@ -122,91 +133,50 @@ public struct CalendarView: View {
         .padding(.top, 12)
     }
 
-    private var createSheet: some View {
-        NavigationView {
-            Form {
-                Section {
-                    TextField("Title", text: $newTitle)
-                        .font(.system(size: 18, weight: .semibold))
-                    Toggle("All-Day", isOn: $isAllDay)
-                        .toggleStyle(.switch)
-                }
-
-                Section(header: Text("Starts").font(.headline)) {
-                    DatePicker("", selection: $newStartDate, displayedComponents: isAllDay ? [.date] : [.date, .hourAndMinute])
-                        .datePickerStyle(.compact)
-                }
-
-                Section(header: Text("Ends").font(.headline)) {
-                    DatePicker("", selection: $newEndDate, in: newStartDate...Date.distantFuture, displayedComponents: isAllDay ? [.date] : [.date, .hourAndMinute])
-                        .datePickerStyle(.compact)
-                }
-
-                Section {
-                    Picker("Calendar", selection: Binding(get: {
-                        selectedCalendar ?? viewModel.availableCalendars.first
-                    }, set: { selectedCalendar = $0 })) {
-                        ForEach(viewModel.availableCalendars, id: \.calendarIdentifier) { cal in
-                            Text(cal.title).tag(Optional(cal))
-                        }
-                    }
-
-                    Picker("Alert", selection: $selectedAlertOption) {
-                        ForEach(AlertOption.allCases, id: \.self) { option in
-                            Text(option.text).tag(option)
-                        }
-                    }
-                }
-
-                Section {
-                    Picker("Repeat", selection: $repeatFrequency) {
-                        ForEach(RepeatFrequency.allCases, id: \.self) { option in
-                            Text(option.text).tag(option)
-                        }
-                    }
-                }
-
-                Section(header: Text("Details")) {
-                    TextField("Location", text: $newLocation)
-                    TextField("URL", text: $newURL)
-                    TextField("Notes", text: $newNotes, axis: .vertical)
-                        .lineLimit(3...6)
-                }
-
-                #if os(macOS)
-                Section {
-                    Picker("Travel Time", selection: $travelTime) {
-                        ForEach(TravelTimeOption.allCases, id: \.self) { option in
-                            Text(option.text).tag(option)
-                        }
-                    }
-                }
-                #endif
-            }
-            .scrollContentBackground(.hidden)
-            .background(
-                Group {
-                    #if os(macOS)
-                    VisualEffectView(material: .sidebar, blendingMode: .behindWindow)
-                    #else
-                    Color(UIColor.systemGroupedBackground)
-                    #endif
-                }
+    private var createOverlay: some View {
+        ZStack(alignment: .center) {
+            Color.black.opacity(0.35)
                 .ignoresSafeArea()
-            )
-            .navigationTitle("New Event")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        showCreateSheet = false
-                        resetCreateFields()
-                    }
+                .onTapGesture {
+                    withAnimation { dismissCreateSheet() }
                 }
 
-                ToolbarItem(placement: .confirmationAction) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("New Event")
+                        .font(.title3.weight(.semibold))
+                    Spacer()
+                    Button {
+                        withAnimation { dismissCreateSheet() }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding([.top, .horizontal], 16)
+                .padding(.bottom, 8)
+
+                Divider()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        createFormFields
+                    }
+                    .padding(16)
+                }
+
+                Divider()
+
+                HStack {
+                    Button("Cancel") {
+                        withAnimation { dismissCreateSheet() }
+                    }
+                    .buttonStyle(.bordered)
+
+                    Spacer()
+
                     Button("Add") {
                         let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
                         let location = newLocation.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -234,15 +204,103 @@ public struct CalendarView: View {
                                 urlString: url,
                                 notes: notes
                             )
-                            showCreateSheet = false
-                            resetCreateFields()
+                            withAnimation { dismissCreateSheet() }
                         }
                     }
+                    .buttonStyle(.borderedProminent)
                     .disabled(newTitle.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+                .padding(16)
             }
-            .frame(minWidth: 460, minHeight: 520)
+            .frame(maxWidth: 720, minHeight: 520, maxHeight: 820, alignment: .topLeading)
+            .background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .shadow(radius: 24)
+            .padding(24)
         }
+    }
+
+    @ViewBuilder
+    private var createFormFields: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Basics")
+                .font(.headline)
+            TextField("Title", text: $newTitle)
+                .font(.system(size: 18, weight: .semibold))
+                .textFieldStyle(.roundedBorder)
+            Toggle("All-Day", isOn: $isAllDay)
+        }
+
+        Divider()
+
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Starts")
+                .font(.headline)
+            DatePicker("Starts", selection: $newStartDate, displayedComponents: isAllDay ? [.date] : [.date, .hourAndMinute])
+                .labelsHidden()
+        }
+
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Ends")
+                .font(.headline)
+            DatePicker(
+                "Ends",
+                selection: $newEndDate,
+                in: newStartDate...Date.distantFuture,
+                displayedComponents: isAllDay ? [.date] : [.date, .hourAndMinute]
+            )
+            .labelsHidden()
+        }
+
+        Divider()
+
+        VStack(alignment: .leading, spacing: 12) {
+            Picker("Calendar", selection: Binding(get: {
+                selectedCalendar ?? viewModel.availableCalendars.first
+            }, set: { selectedCalendar = $0 })) {
+                ForEach(viewModel.availableCalendars, id: \.calendarIdentifier) { cal in
+                    Text(cal.title).tag(Optional(cal))
+                }
+            }
+            .pickerStyle(.menu)
+
+            Picker("Alert", selection: $selectedAlertOption) {
+                ForEach(AlertOption.allCases, id: \.self) { option in
+                    Text(option.text).tag(option)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Picker("Repeat", selection: $repeatFrequency) {
+                ForEach(RepeatFrequency.allCases, id: \.self) { option in
+                    Text(option.text).tag(option)
+                }
+            }
+            .pickerStyle(.menu)
+        }
+
+        Divider()
+
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Details")
+                .font(.headline)
+            TextField("Location", text: $newLocation)
+                .textFieldStyle(.roundedBorder)
+            TextField("URL", text: $newURL)
+                .textFieldStyle(.roundedBorder)
+            TextField("Notes", text: $newNotes, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(3...6)
+        }
+
+        #if os(macOS)
+        Divider()
+        Picker("Travel Time", selection: $travelTime) {
+            ForEach(TravelTimeOption.allCases, id: \.self) { option in
+                Text(option.text).tag(option)
+            }
+        }
+        .pickerStyle(.menu)
+        #endif
     }
 
     private func resetCreateFields() {
@@ -259,6 +317,11 @@ public struct CalendarView: View {
         #if os(macOS)
         travelTime = .none
         #endif
+    }
+
+    private func dismissCreateSheet() {
+        showCreateSheet = false
+        resetCreateFields()
     }
 
     private var footer: some View {
@@ -339,11 +402,14 @@ public struct CalendarView: View {
     }
 
     private var hourMarkers: [Date] {
-        let start = startOfDay(for: Date())
-        return (0..<24).compactMap { Calendar.current.date(byAdding: .hour, value: $0, to: start) }
+        return (0..<24).compactMap { Calendar.current.date(byAdding: .hour, value: $0, to: timelineStart) }
     }
 
     private var hourHeight: CGFloat { 42 }
+    private var pointsPerMinute: CGFloat { hourHeight / 60 }
+    private var timelineHeight: CGFloat { hourHeight * CGFloat(hourMarkers.count) }
+    private var timelineStart: Date { startOfDay(for: Date()) }
+    private var timelineEnd: Date { Calendar.current.date(byAdding: .hour, value: 24, to: timelineStart)! }
 
     private var hourGrid: some View {
         VStack(spacing: 0) {
@@ -364,26 +430,64 @@ public struct CalendarView: View {
     }
 
     private func eventBlock(for event: UserCalendarEvent) -> some View {
-        let offset = offsetForEvent(event)
-        let height = blockHeight(for: event)
-        return RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(eventFill(for: event))
-            .overlay(eventLabel(for: event).padding(.horizontal, 12))
-            .frame(height: height)
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(isOngoing(event: event) ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.08),
-                                   lineWidth: isOngoing(event: event) ? 2 : 1)
-            )
-            .padding(.leading, 58)
-            .offset(y: offset)
+        let metrics = displayMetrics(for: event)
+        return Group {
+            if metrics.isVisible {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(eventFill(for: event))
+                    .overlay(eventLabel(for: event).padding(.horizontal, 12))
+                    .frame(height: metrics.height)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(
+                                isOngoing(event: event) ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.08),
+                                lineWidth: isOngoing(event: event) ? 2 : 1
+                            )
+                    )
+                    .padding(.leading, 58)
+                    .offset(y: metrics.offset)
+            }
+        }
     }
 
-    private func offsetForEvent(_ event: UserCalendarEvent) -> CGFloat {
-        let startOfDay = startOfDay(for: event.startDate)
-        let minutesFromStart = event.startDate.timeIntervalSince(startOfDay) / 60
-        let pointsPerMinute = hourHeight / 60
-        return CGFloat(minutesFromStart) * pointsPerMinute
+    private func displayMetrics(for event: UserCalendarEvent) -> (isVisible: Bool, offset: CGFloat, height: CGFloat) {
+        let dayStart = timelineStart
+        let dayEnd = timelineEnd
+        let displayStart = max(event.startDate, dayStart)
+        let displayEnd = min(event.endDate, dayEnd)
+        guard displayEnd > displayStart else { return (false, 0, 0) }
+
+        let minutesFromDayStart = displayStart.timeIntervalSince(dayStart) / 60
+        let durationMinutes = displayEnd.timeIntervalSince(displayStart) / 60
+
+        let rawHeight = CGFloat(durationMinutes) * pointsPerMinute
+        let height = min(max(rawHeight, 24), hourHeight * 2) // show at least a stub, cap at ~2 hours height
+
+        let unclampedOffset = CGFloat(minutesFromDayStart) * pointsPerMinute
+        let maxOffset = max(timelineHeight - height, 0)
+        let offset = min(max(unclampedOffset, 0), maxOffset)
+
+        return (true, offset, height)
+    }
+
+    private var currentTimeIndicator: some View {
+        Group {
+            if let offset = currentTimeOffset(for: now) {
+                Rectangle()
+                    .fill(Color.red)
+                    .frame(height: 2)
+                    .padding(.leading, 58)
+                    .offset(y: offset)
+            }
+        }
+    }
+
+    private func currentTimeOffset(for date: Date) -> CGFloat? {
+        guard date >= timelineStart && date <= timelineEnd else { return nil }
+        let minutesFromStart = date.timeIntervalSince(timelineStart) / 60
+        let unclamped = CGFloat(minutesFromStart) * pointsPerMinute
+        let maxOffset = max(timelineHeight - 2, 0)
+        return min(max(unclamped, 0), maxOffset)
     }
 }
 

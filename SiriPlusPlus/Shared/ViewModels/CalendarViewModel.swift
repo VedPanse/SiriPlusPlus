@@ -88,6 +88,30 @@ public final class CalendarViewModel: ObservableObject {
         dataManager.openCalendar(at: Date())
     }
 
+    public func editEvent(eventID: String, newTitle: String, newDate: Date, newDuration: TimeInterval) async throws {
+        let updated = try await dataManager.editEvent(eventID: eventID, newTitle: newTitle, newDate: newDate, newDuration: newDuration)
+        if let idx = events.firstIndex(where: { $0.eventIdentifier == eventID }) {
+            events[idx] = updated
+        } else {
+            events.append(updated)
+        }
+        events.sort { $0.startDate < $1.startDate }
+    }
+
+    public func deleteEvents(eventIDs: [String]) async throws {
+        try await dataManager.deleteEvents(eventIDs: eventIDs)
+        events.removeAll { event in
+            guard let id = event.eventIdentifier else { return false }
+            return eventIDs.contains(id)
+        }
+    }
+
+    public func matchingEvent(forTitle title: String) -> UserCalendarEvent? {
+        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let lowered = title.lowercased()
+        return events.first { $0.title.lowercased().contains(lowered) }
+    }
+
     #if canImport(EventKitUI)
     public func editFirstEvent() async {
         guard let first = events.first, let id = first.eventIdentifier else {
@@ -117,5 +141,9 @@ public final class CalendarViewModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    public func refreshEventsCache() async {
+        await loadCalendarEvents()
     }
 }

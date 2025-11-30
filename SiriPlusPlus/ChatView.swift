@@ -30,12 +30,25 @@ public final class ChatViewModel: ObservableObject {
     @Published public var inputText: String = ""
     @Published public var isProcessing: Bool = false
     @Published public var errorMessage: String?
+    @Published public var quickSuggestions: [String] = ChatViewModel.defaultSuggestions
+    @Published public var isLoadingSuggestions: Bool = false
+    @Published public var calendarContext: String = ""
     @available(iOS 18.0, macOS 15.0, *)
     private var liveSession: LanguageModelSession?
+    @available(iOS 18.0, macOS 15.0, *)
+    private var suggestionsSession: LanguageModelSession?
+    @available(iOS 18.0, macOS 15.0, *)
+    private var calendarIntentSession: LanguageModelSession?
+
+    private static let defaultSuggestions = [
+        "Triage my inbox and draft replies for anything urgent",
+        "Plan my day: calendar, reminders, and travel buffers",
+        "Order my usual lunch from DoorDash at noon"
+    ]
 
     public init() {}
 
-    public func sendMessage() {
+    public func sendMessage(calendarViewModel: CalendarViewModel? = nil) {
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let userMessage = Message(role: .user, text: trimmed)
@@ -43,6 +56,9 @@ public final class ChatViewModel: ObservableObject {
         inputText = ""
 
         Task {
+            if await handleCalendarIntent(prompt: trimmed, calendarViewModel: calendarViewModel) {
+                return
+            }
             await runSystemModel(prompt: trimmed)
         }
     }
@@ -66,7 +82,19 @@ public final class ChatViewModel: ObservableObject {
                 if liveSession == nil {
                     liveSession = LanguageModelSession()
                 }
-                let response = try await liveSession?.respond(to: prompt)
+                let augmentedPrompt: String
+                if calendarContext.isEmpty {
+                    augmentedPrompt = prompt
+                } else {
+                    augmentedPrompt = """
+                    You have full context of today's calendar:
+                    \(calendarContext)
+
+                    User: \(prompt)
+                    """
+                }
+
+                let response = try await liveSession?.respond(to: augmentedPrompt)
                 let text = response?.content ?? "No response"
                 messages.append(Message(role: .assistant, text: text))
             } catch {
@@ -79,6 +107,287 @@ public final class ChatViewModel: ObservableObject {
             errorMessage = fallback
             messages.append(Message(role: .assistant, text: fallback))
         }
+    }
+
+    @MainActor
+    public func loadQuickSuggestions() async {
+        guard #available(iOS 18.0, macOS 15.0, *) else { return }
+        guard SystemLanguageModel.default.isAvailable else { return }
+        if isLoadingSuggestions { return }
+
+        isLoadingSuggestions = true
+        defer { isLoadingSuggestions = false }
+
+        do {
+            if suggestionsSession == nil {
+                suggestionsSession = LanguageModelSession()
+            }
+
+            let prompt = """
+            You are a personal AI assistant like an augmented Siri. Generate three concise, proactive suggestions for how you can help the user. Use the following examples as style and tone guidance:
+            1) Triage my inbox and draft replies for anything urgent
+            2) Plan my day: calendar, reminders, and travel buffers
+            3) Order my usual lunch from DoorDash at noon
+
+            Respond with three similar, helpful ideas, numbered 1-3. Keep each under 80 characters.
+            """
+
+            let response = try await suggestionsSession?.respond(to: prompt)
+            let text = response?.content ?? ""
+            let parsed = parseSuggestions(from: text)
+            if !parsed.isEmpty {
+                quickSuggestions = parsed
+            }
+        } catch {
+            // Keep defaults on failure
+        }
+    }
+
+    private func parseSuggestions(from text: String) -> [String] {
+        let lines = text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        var suggestions: [String] = []
+        for line in lines {
+            let stripped = line
+                .replacingOccurrences(of: #"^\d+[\).\-\s]*"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !stripped.isEmpty {
+                suggestions.append(stripped)
+            }
+            if suggestions.count == 3 { break }
+        }
+        return suggestions
+    }
+
+    @MainActor
+    public func refreshCalendarContext(events: [UserCalendarEvent]) {
+        guard !events.isEmpty else {
+            calendarContext = "No events scheduled for today."
+            return
+        }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+
+        let details = events.map { event in
+            let start = formatter.string(from: event.startDate)
+            let end = formatter.string(from: event.endDate)
+            let location = event.location.map { " @ \($0)" } ?? ""
+            return "- \(event.title)\(location) from \(start) to \(end)"
+        }
+        calendarContext = details.joined(separator: "\n")
+    }
+
+    @MainActor
+    private func handleCalendarIntent(prompt: String, calendarViewModel: CalendarViewModel?) async -> Bool {
+        guard let calendarViewModel else { return false }
+        guard #available(iOS 18.0, macOS 15.0, *) else { return false }
+        guard SystemLanguageModel.default.isAvailable else { return false }
+
+        do {
+            if calendarIntentSession == nil {
+                calendarIntentSession = LanguageModelSession()
+            }
+
+            let intentPrompt = """
+            You are a planning agent that converts user requests into structured calendar actions for today's calendar only.
+            Use these examples as style guidance: triage inbox, plan my day, order lunch, create/edit/delete calendar items.
+            Today's events:
+            \(calendarContext.isEmpty ? "No events scheduled for today." : calendarContext)
+
+            Respond ONLY with JSON matching:
+            {
+              "action": "create" | "edit" | "delete",
+              "clarification": "string if you need more info, else empty",
+              "events": [
+                {
+                  "title": "title of event",
+                  "newTitle": "optional new title for edit",
+                  "startTime": "ISO8601 string for start today, e.g. 2024-09-04T14:00:00Z or HH:mm",
+                  "endTime": "ISO8601 string for end or HH:mm",
+                  "durationMinutes": 60
+                }
+              ]
+            }
+            If details are missing, set "clarification" to the question you need and leave other fields as best-effort.
+            """
+
+            let response = try await calendarIntentSession?.respond(to: intentPrompt + "\nUser: \(prompt)")
+            let jsonText = response?.content ?? ""
+            print("[CalendarIntent] Raw model response: \(jsonText)")
+            guard let intent = parseIntent(from: jsonText) else {
+                print("[CalendarIntent] Failed to parse intent JSON")
+                return false
+            }
+            print("[CalendarIntent] Parsed intent: \(intent)")
+
+            if let clarification = intent.clarification, !clarification.isEmpty {
+                messages.append(Message(role: .assistant, text: clarification))
+                return true
+            }
+
+            switch intent.action {
+            case .create:
+                let created = try await applyCreates(intent.events, calendarViewModel: calendarViewModel)
+                messages.append(Message(role: .assistant, text: created > 0 ? "Created \(created) event(s) for today." : "No event created."))
+                refreshCalendarContext(events: calendarViewModel.events)
+                return true
+            case .edit:
+                let edited = try await applyEdits(intent.events, calendarViewModel: calendarViewModel)
+                messages.append(Message(role: .assistant, text: edited > 0 ? "Updated \(edited) event(s) for today." : "No matching events to update today."))
+                refreshCalendarContext(events: calendarViewModel.events)
+                return true
+            case .delete:
+                let deleted = try await applyDeletes(intent.events, calendarViewModel: calendarViewModel)
+                messages.append(Message(role: .assistant, text: deleted > 0 ? "Deleted \(deleted) event(s) for today." : "No matching events to delete today."))
+                refreshCalendarContext(events: calendarViewModel.events)
+                return true
+            case .unknown:
+                return false
+            }
+        } catch {
+            print("[CalendarIntent] Error handling intent: \(error)")
+            return false
+        }
+    }
+
+    private func parseIntent(from jsonText: String) -> CalendarIntent? {
+        guard let start = jsonText.firstIndex(of: "{"), let end = jsonText.lastIndex(of: "}") else { return nil }
+        let jsonSubstring = jsonText[start...end]
+        guard let data = String(jsonSubstring).data(using: .utf8) else { return nil }
+        let decoder = JSONDecoder()
+        return try? decoder.decode(CalendarIntent.self, from: data)
+    }
+
+    private func applyCreates(_ events: [CalendarIntent.EventSpec], calendarViewModel: CalendarViewModel) async throws -> Int {
+        var count = 0
+        for event in events {
+            guard let start = event.startDate(timeline: .today),
+                  let end = event.endDate(timeline: .today, fallbackDuration: event.durationMinutes ?? 60) else { continue }
+            let title = event.title?.isEmpty == false ? event.title! : "New Event"
+            print("[CalendarIntent] Creating event '\(title)' \(start) - \(end)")
+            await calendarViewModel.createEvent(
+                title: title,
+                startDate: start,
+                endDate: end,
+                isAllDay: false,
+                durationMinutes: Double(event.durationMinutes ?? 60),
+                calendar: calendarViewModel.selectedCalendar,
+                alert: .none,
+                repeatRule: .none,
+                travelTime: .none,
+                location: nil,
+                urlString: nil,
+                notes: nil
+            )
+            count += 1
+        }
+        if count == 0 {
+            print("[CalendarIntent] No events created; specs: \(events)")
+        }
+        await calendarViewModel.loadCalendarEvents()
+        return count
+    }
+
+    private func applyEdits(_ events: [CalendarIntent.EventSpec], calendarViewModel: CalendarViewModel) async throws -> Int {
+        var count = 0
+        for spec in events {
+            guard let match = calendarViewModel.matchingEvent(forTitle: spec.title ?? spec.newTitle ?? "") else {
+                print("[CalendarIntent] No matching event to edit for title: \(spec.title ?? spec.newTitle ?? "")")
+                continue
+            }
+            let start = spec.startDate(timeline: .today) ?? match.startDate
+            let end = spec.endDate(timeline: .today, fallbackDuration: spec.durationMinutes ?? match.endDate.timeIntervalSince(match.startDate) / 60) ?? match.endDate
+            let duration = end.timeIntervalSince(start)
+            let newTitle = spec.newTitle ?? spec.title ?? match.title
+            if let id = match.eventIdentifier {
+                print("[CalendarIntent] Editing event '\(match.title)' -> '\(newTitle)' \(start) - \(end)")
+                try await calendarViewModel.editEvent(eventID: id, newTitle: newTitle, newDate: start, newDuration: duration)
+                count += 1
+            }
+        }
+        if count == 0 {
+            print("[CalendarIntent] No events edited; specs: \(events)")
+        }
+        await calendarViewModel.loadCalendarEvents()
+        return count
+    }
+
+    private func applyDeletes(_ events: [CalendarIntent.EventSpec], calendarViewModel: CalendarViewModel) async throws -> Int {
+        let ids = events.compactMap { spec in
+            calendarViewModel.matchingEvent(forTitle: spec.title ?? "")?.eventIdentifier
+        }
+        guard !ids.isEmpty else { return 0 }
+        print("[CalendarIntent] Deleting events with IDs: \(ids)")
+        try await calendarViewModel.deleteEvents(eventIDs: ids)
+        await calendarViewModel.loadCalendarEvents()
+        return ids.count
+    }
+
+    private struct CalendarIntent: Decodable {
+        enum Action: String, Decodable {
+            case create, edit, delete, unknown
+        }
+        struct EventSpec: Decodable {
+            let title: String?
+            let newTitle: String?
+            let startTime: String?
+            let endTime: String?
+            let durationMinutes: Double?
+
+            func startDate(timeline: TimelineContext) -> Date? {
+                guard let startTime else { return nil }
+                return Date.fromISO8601(startTime) ?? timeline.dateForToday(timeString: startTime)
+            }
+
+            func endDate(timeline: TimelineContext, fallbackDuration: Double) -> Date? {
+                if let endTime, let end = Date.fromISO8601(endTime) ?? timeline.dateForToday(timeString: endTime) {
+                    return end
+                }
+                if let start = startDate(timeline: timeline) {
+                    return start.addingTimeInterval(fallbackDuration * 60)
+                }
+                return nil
+            }
+        }
+
+        let action: Action
+        let clarification: String?
+        let events: [EventSpec]
+    }
+}
+
+private extension Date {
+    static func fromISO8601(_ string: String) -> Date? {
+        ISO8601DateFormatter().date(from: string)
+    }
+}
+
+private enum TimelineContext {
+    case today
+
+    func dateForToday(timeString: String) -> Date? {
+        let formats = ["HH:mm", "H:mm", "HHmm", "h a", "h:mm a", "h.mm a"]
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        var time: Date?
+        for format in formats {
+            formatter.dateFormat = format
+            if let parsed = formatter.date(from: timeString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) {
+                time = parsed
+                break
+            }
+        }
+        guard let time else { return nil }
+        var components = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        let timeComponents = Calendar.current.dateComponents([.hour, .minute, .second], from: time)
+        components.hour = timeComponents.hour
+        components.minute = timeComponents.minute
+        components.second = 0
+        return Calendar.current.date(from: components)
     }
 }
 
@@ -104,6 +413,14 @@ public struct ChatView: View {
                 .padding(.horizontal, 18)
                 .padding(.top, 18)
             #endif
+        }
+        .task {
+            await viewModel.loadQuickSuggestions()
+            await calendarViewModel.loadCalendarEvents()
+            viewModel.refreshCalendarContext(events: calendarViewModel.events)
+        }
+        .onChange(of: calendarViewModel.events) { _, newValue in
+            viewModel.refreshCalendarContext(events: newValue)
         }
     }
 
@@ -200,9 +517,17 @@ public struct ChatView: View {
     // MARK: - Quick Prompts
     private var quickPrompts: some View {
         VStack(spacing: 10) {
-            quickPromptRow(title: "Triage my inbox and draft replies for anything urgent")
-            quickPromptRow(title: "Plan my day: calendar, reminders, and travel buffers")
-            quickPromptRow(title: "Order my usual lunch from DoorDash at noon")
+            ForEach(viewModel.quickSuggestions, id: \.self) { suggestion in
+                quickPromptRow(title: suggestion)
+            }
+            if viewModel.isLoadingSuggestions {
+                HStack(spacing: 6) {
+                    ProgressView()
+                    Text("Refreshing suggestions with on-device AI…")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .frame(maxWidth: 460, alignment: .center)
     }
@@ -210,7 +535,7 @@ public struct ChatView: View {
     private func quickPromptRow(title: String) -> some View {
         Button {
             viewModel.inputText = title
-            viewModel.sendMessage()
+            viewModel.sendMessage(calendarViewModel: calendarViewModel)
         } label: {
             HStack {
                 Text(title)
@@ -276,12 +601,15 @@ public struct ChatView: View {
                 .lineLimit(1...6)
                 .textFieldStyle(.plain)
                 .submitLabel(.send)
-                .onSubmit { viewModel.sendMessage() }
-            Button(action: viewModel.sendMessage) {
+                .onSubmit { viewModel.sendMessage(calendarViewModel: calendarViewModel) }
+            Button(action: { viewModel.sendMessage(calendarViewModel: calendarViewModel) }) {
                 Image(systemName: "paperplane.fill")
                     .font(.system(size: 16, weight: .semibold))
             }
             .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.circle)
+            .controlSize(.large)
+            .padding(2)
             .disabled(viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(.horizontal, 16)
