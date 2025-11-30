@@ -85,9 +85,6 @@ public final class ChatViewModel: ObservableObject {
 // MARK: - ChatView
 public struct ChatView: View {
     @StateObject private var viewModel = ChatViewModel()
-    @State private var enableGPT4 = true
-    @State private var enableBERT = false
-    @State private var enableLlama = false
 
     public init() {}
 
@@ -111,13 +108,21 @@ public struct ChatView: View {
 
     @ViewBuilder
     private var macOSLayout: some View {
-        HStack(alignment: .top, spacing: 16) {
-            mainGlassCard
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .layoutPriority(1)
+        HStack(alignment: .top, spacing: 12) {
+            mainColumnWithInput
+                .frame(maxWidth: .infinity, alignment: .center)
 
-            sidePanel
-                .frame(width: 320, alignment: .top)
+            Divider()
+                .frame(maxHeight: .infinity)
+                .background(Color.white.opacity(0.18))
+
+            ScrollView {
+                sidePanel
+                    .frame(maxWidth: .infinity, alignment: .top)
+            }
+            .scrollIndicators(.hidden)
+            .frame(width: 480, alignment: .top)
+            .frame(maxHeight: .infinity, alignment: .top)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(.trailing, 12)
@@ -126,11 +131,31 @@ public struct ChatView: View {
 
     @ViewBuilder
     private var iOSLayout: some View {
-        VStack(spacing: 12) {
-            mainGlassCard
-                .frame(maxWidth: .infinity, alignment: .top)
+        mainColumnWithInput
+    }
+
+    // MARK: - Main Column with Input
+    private var mainColumnWithInput: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .bottom) {
+                ScrollView {
+                    mainGlassCard
+                        .frame(maxWidth: 640, alignment: .center)
+                        .padding(.bottom, 180) // leave room under scroll content
+                        .frame(maxWidth: .infinity)
+                }
+                .scrollIndicators(.hidden)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+                let bottomInset = max(proxy.size.height * 0.02, 20)
+                inputBar
+                    .padding(.horizontal, 32)
+                    .padding(.bottom, bottomInset)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .frame(maxWidth: .infinity, alignment: .top)
+        .frame(maxWidth: 640, maxHeight: .infinity, alignment: .center)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     // MARK: - Main Glass Card
@@ -138,10 +163,15 @@ public struct ChatView: View {
         VStack(spacing: 18) {
             headerHero
             quickPrompts
-            chatStack
+            messageList
+                .frame(maxWidth: 600, alignment: .center)
         }
-        .padding(22)
-        .glassCard()
+        .frame(maxWidth: .infinity, alignment: .center)
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 40)
+        .frame(maxWidth: .infinity, minHeight: 820, alignment: .center)
+        .padding(12)
     }
 
     // MARK: - Header
@@ -173,6 +203,7 @@ public struct ChatView: View {
             quickPromptRow(title: "How does this API work?")
             quickPromptRow(title: "Summarize the meeting notes")
         }
+        .frame(maxWidth: 520, alignment: .center)
     }
 
     private func quickPromptRow(title: String) -> some View {
@@ -192,9 +223,12 @@ public struct ChatView: View {
             .glassTile()
         }
         .buttonStyle(.plain)
+        #if os(macOS)
+        .focusable(false)
+        #endif
     }
 
-    private var chatStack: some View {
+    private var messageList: some View {
         VStack(spacing: 12) {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -214,27 +248,6 @@ public struct ChatView: View {
                 }
             }
 
-            HStack(alignment: .bottom, spacing: 8) {
-                HStack(spacing: 10) {
-                    Image(systemName: "mic.fill")
-                        .foregroundStyle(.secondary)
-                    TextField("Ask anything…", text: $viewModel.inputText, axis: .vertical)
-                        .lineLimit(1...6)
-                        .textFieldStyle(.plain)
-                        .submitLabel(.send)
-                        .onSubmit { viewModel.sendMessage() }
-                    Button(action: viewModel.sendMessage) {
-                        Image(systemName: "paperplane.fill")
-                            .font(.system(size: 16, weight: .semibold))
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .glassTile()
-            }
-
             if viewModel.isProcessing {
                 HStack(spacing: 8) {
                     ProgressView()
@@ -252,6 +265,32 @@ public struct ChatView: View {
                     .multilineTextAlignment(.leading)
             }
         }
+    }
+
+    private var inputBar: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "mic.fill")
+                .foregroundStyle(.secondary)
+            TextField("Ask anything…", text: $viewModel.inputText, axis: .vertical)
+                .lineLimit(1...6)
+                .textFieldStyle(.plain)
+                .submitLabel(.send)
+                .onSubmit { viewModel.sendMessage() }
+            Button(action: viewModel.sendMessage) {
+                Image(systemName: "paperplane.fill")
+                    .font(.system(size: 16, weight: .semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color.white.opacity(0.1))
+        )
+        .shadow(color: Color.black.opacity(0.1), radius: 8, x: 0, y: 4)
     }
 
     @ViewBuilder
@@ -275,72 +314,190 @@ public struct ChatView: View {
     // MARK: - Side Panel
     private var sidePanel: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Personal Cognition")
-                        .font(.headline)
-                    Label("2 sources connected", systemImage: "bolt.horizontal.fill")
-                        .foregroundStyle(.secondary)
-                        .font(.subheadline)
-                }
-                Spacer()
-                Image(systemName: "brain.head.profile")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Feed")
+                .font(.headline)
 
-            GlassButton(label: "Preferences", systemImage: "gearshape.fill") {}
+            Label("Latest from your inbox", systemImage: "envelope.badge")
+                .foregroundStyle(.secondary)
+                .font(.subheadline)
 
-            VStack(alignment: .leading, spacing: 12) {
-                Text("General Knowledge")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                toggleRow(title: "GPT-4", isOn: $enableGPT4)
-                toggleRow(title: "BERT", isOn: $enableBERT)
-                toggleRow(title: "Llama", isOn: $enableLlama)
-            }
-
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Integrations")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                integrationRow(title: "Notion", status: "Manage")
-                integrationRow(title: "Google Drive", status: "Connect")
-                integrationRow(title: "Asana", status: "Connect")
-                integrationRow(title: "Jira", status: "Connect")
-            }
+            feedEmailCard
+            feedCalendarCard
 
             Spacer()
         }
         .padding(18)
-        .glassCard()
     }
 
-    private func toggleRow(title: String, isOn: Binding<Bool>) -> some View {
-        HStack {
-            Label(title, systemImage: "bolt.fill")
-            Spacer()
-            Toggle("", isOn: isOn)
-                .labelsHidden()
+    private var feedEmailCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 8) {
+                Image(systemName: "envelope.fill")
+                    .foregroundStyle(.primary)
+                Text("Coffee? · Mail from Marisa Lu")
+                    .font(.footnote.weight(.semibold))
+                Spacer()
+                Image(systemName: "paperplane")
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.secondary)
+
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Marisa Lu")
+                        .font(.headline)
+                    Text("Coffee?")
+                        .font(.title3.weight(.bold))
+                }
+                Spacer()
+                Text("Just now")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Hey Jason,")
+                    .font(.subheadline.weight(.semibold))
+                Text("""
+Was wondering if you'd be interested in meeting my team at Philz Coffee at 11 AM today. No pressure if you can't make it, although I think you guys would really get along!
+
+Marisa
+""")
+                    .font(.subheadline)
+            }
+
+            HStack(spacing: 12) {
+                actionChip("Reply")
+                actionChip("Forward")
+                actionChip("Delete")
+            }
+
+            HStack {
+                Image(systemName: "asterisk.circle")
+                    .font(.caption)
+                Text("More actions")
+                    .font(.caption)
+            }
+            .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(16)
         .glassTile()
     }
 
-    private func integrationRow(title: String, status: String) -> some View {
-        HStack {
-            Label(title, systemImage: "link")
-            Spacer()
-            Text(status)
-                .font(.footnote.weight(.semibold))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color.accentColor.opacity(0.15), in: Capsule())
+    private func actionChip(_ title: String) -> some View {
+        Text(title)
+            .font(.footnote.weight(.semibold))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: Capsule())
+    }
+
+    private var feedCalendarCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 6) {
+                Image(systemName: "calendar.badge.clock")
+                    .foregroundStyle(.primary)
+                Text("See my availability: today")
+                    .font(.footnote.weight(.semibold))
+                Spacer()
+                Image(systemName: "ellipsis")
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.secondary)
+
+            Text("Available until 1 PM")
+                .font(.title3.weight(.bold))
+
+            Text("Would you like to create an event for Coffee with Marisa at 11 AM?")
+                .font(.subheadline)
+
+            VStack(spacing: 6) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text("9:41 AM")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("11 AM")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("1 PM")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("3 PM")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Rectangle()
+                        .frame(width: 1)
+                        .foregroundStyle(Color.secondary.opacity(0.25))
+
+                    VStack(spacing: 6) {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(.thinMaterial)
+                            .frame(height: 30)
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.blue.opacity(0.45))
+                            .overlay(
+                                HStack {
+                                    Text("Coffee with Marisa")
+                                        .font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    Text("Philz Coffee")
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.horizontal, 12)
+                            )
+                            .frame(height: 40)
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.gray.opacity(0.25))
+                            .overlay(
+                                HStack {
+                                    Text("Meeting with Danny Trinh")
+                                        .font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    Text("Mars Landing")
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.horizontal, 12)
+                            )
+                            .frame(height: 40)
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(.thinMaterial)
+                            .frame(height: 28)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .padding(10)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+
+            HStack(spacing: 10) {
+                calendarAction("Create Event")
+                calendarAction("Edit Event")
+                calendarAction("Full Calendar")
+                calendarAction("Dismiss")
+            }
+
+            HStack {
+                Image(systemName: "asterisk.circle")
+                    .font(.caption)
+                Text("More actions")
+                    .font(.caption)
+            }
+            .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(14)
         .glassTile()
+    }
+
+    private func calendarAction(_ title: String) -> some View {
+        Text(title)
+            .font(.footnote.weight(.semibold))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: Capsule())
     }
 }
 
@@ -356,18 +513,6 @@ private struct FullscreenVisualEffect: View {
 }
 
 // MARK: - Glass Modifiers
-private struct GlassCard: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(Color.white.opacity(0.12))
-            )
-            .shadow(color: Color.black.opacity(0.25), radius: 18, x: 0, y: 10)
-    }
-}
-
 private struct GlassTile: ViewModifier {
     func body(content: Content) -> some View {
         content
@@ -380,28 +525,7 @@ private struct GlassTile: ViewModifier {
 }
 
 private extension View {
-    func glassCard() -> some View { modifier(GlassCard()) }
     func glassTile() -> some View { modifier(GlassTile()) }
-}
-
-// MARK: - Glass Button
-private struct GlassButton: View {
-    var label: String
-    var systemImage: String
-    var action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                Label(label, systemImage: systemImage)
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .glassTile()
-        }
-        .buttonStyle(.plain)
-    }
 }
 
 // MARK: - Blur Container
