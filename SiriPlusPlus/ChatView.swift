@@ -388,9 +388,8 @@ Marisa
     private func actionChip(_ title: String) -> some View {
         Text(title)
             .font(.footnote.weight(.semibold))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial, in: Capsule())
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
     }
 
 }

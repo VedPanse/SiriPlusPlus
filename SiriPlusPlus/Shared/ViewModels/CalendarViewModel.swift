@@ -7,6 +7,9 @@ public final class CalendarViewModel: ObservableObject {
     @Published public var isLoading: Bool = false
     @Published public var accessDenied: Bool = false
     @Published public var errorMessage: String?
+    #if canImport(EventKitUI)
+    public var eventStore: EKEventStore { dataManager.eventStore }
+    #endif
 
     private let dataManager: CalendarDataManager
 
@@ -28,7 +31,7 @@ public final class CalendarViewModel: ObservableObject {
                 return
             }
 
-            let fetched = try await dataManager.fetchEventsForCurrentMonth()
+            let fetched = try await dataManager.fetchEventsForToday()
             events = fetched
         } catch {
             errorMessage = error.localizedDescription
@@ -36,4 +39,28 @@ public final class CalendarViewModel: ObservableObject {
 
         isLoading = false
     }
+
+    public func openFirstEventInCalendar() {
+        if let first = events.first {
+            dataManager.openCalendar(at: first.startDate)
+        } else {
+            dataManager.openCalendar(at: Date())
+        }
+    }
+
+    public func openCalendarApp() {
+        dataManager.openCalendar(at: Date())
+    }
+
+    #if canImport(EventKitUI)
+    public func prepareEventForEditing() async -> EditableEvent? {
+        do {
+            let event = try await dataManager.makeEditableEventForEditing()
+            return EditableEvent(ekEvent: event)
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+    #endif
 }

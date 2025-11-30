@@ -2,6 +2,9 @@ import SwiftUI
 
 public struct CalendarView: View {
     @ObservedObject var viewModel: CalendarViewModel
+    #if canImport(EventKitUI)
+    @State private var editingEvent: EditableEvent?
+    #endif
 
     public init(viewModel: CalendarViewModel) {
         self.viewModel = viewModel
@@ -38,6 +41,14 @@ public struct CalendarView: View {
         .task {
             await viewModel.loadCalendarEvents()
         }
+        #if canImport(EventKitUI)
+        .sheet(item: $editingEvent) { wrapper in
+            EventEditView(event: wrapper.ekEvent, store: viewModel.eventStore) {
+                editingEvent = nil
+                Task { await viewModel.loadCalendarEvents() }
+            }
+        }
+        #endif
     }
 
     private var header: some View {
@@ -82,6 +93,11 @@ public struct CalendarView: View {
                             .fill(eventFill(for: event))
                             .overlay(eventLabel(for: event).padding(.horizontal, 12))
                             .frame(height: blockHeight(for: event))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .strokeBorder(isOngoing(event: event) ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.08),
+                                                   lineWidth: isOngoing(event: event) ? 2 : 1)
+                            )
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -93,10 +109,28 @@ public struct CalendarView: View {
 
     private var actions: some View {
         HStack(spacing: 10) {
-            calendarAction("Create Event")
-            calendarAction("Edit Event")
-            calendarAction("Full Calendar")
-            calendarAction("Dismiss")
+            Button {
+                #if canImport(EventKitUI)
+                Task {
+                    if let wrapper = await viewModel.prepareEventForEditing() {
+                        editingEvent = wrapper
+                    }
+                }
+                #else
+                viewModel.openCalendarApp()
+                #endif
+            } label: { calendarActionLabel("Create Event") }
+            .buttonStyle(.plain)
+
+            Button {
+                viewModel.openFirstEventInCalendar()
+            } label: { calendarActionLabel("Edit Event") }
+            .buttonStyle(.plain)
+
+            Button {
+                viewModel.openCalendarApp()
+            } label: { calendarActionLabel("Full Calendar") }
+            .buttonStyle(.plain)
         }
     }
 
@@ -111,7 +145,9 @@ public struct CalendarView: View {
     }
 
     private func eventFill(for event: UserCalendarEvent) -> some ShapeStyle {
-        if let location = event.location, location.lowercased().contains("coffee") {
+        if isOngoing(event: event) {
+            return Color.accentColor.opacity(0.45)
+        } else if let location = event.location, location.lowercased().contains("coffee") {
             return Color.blue.opacity(0.45)
         }
         return Color.gray.opacity(0.25)
@@ -170,12 +206,17 @@ public struct CalendarView: View {
         "\(timeFormatter.string(from: event.startDate)) – \(timeFormatter.string(from: event.endDate))"
     }
 
-    private func calendarAction(_ title: String) -> some View {
+    private func calendarActionLabel(_ title: String) -> some View {
         Text(title)
             .font(.footnote.weight(.semibold))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial, in: Capsule())
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+    }
+
+    private func isOngoing(event: UserCalendarEvent) -> Bool {
+        let now = Date()
+        return now >= event.startDate && now <= event.endDate
     }
 
     private var timeFormatter: DateFormatter {
@@ -185,3 +226,42 @@ public struct CalendarView: View {
         return formatter
     }
 }
+
+#if canImport(EventKitUI)
+import EventKitUI
+
+public struct EditableEvent: Identifiable {
+    public let id = UUID()
+    public let ekEvent: EKEvent
+}
+
+private struct EventEditView: UIViewControllerRepresentable {
+    let event: EKEvent
+    let store: EKEventStore
+    var onComplete: () -> Void
+
+    func makeUIViewController(context: Context) -> EKEventEditViewController {
+        let vc = EKEventEditViewController()
+        vc.eventStore = store
+        vc.event = event
+        vc.editViewDelegate = context.coordinator
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: EKEventEditViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onComplete: onComplete)
+    }
+
+    final class Coordinator: NSObject, EKEventEditViewDelegate {
+        let onComplete: () -> Void
+        init(onComplete: @escaping () -> Void) {
+            self.onComplete = onComplete
+        }
+        func eventEditViewController(_ controller: EKEventEditViewController, didCompleteWith action: EKEventEditViewAction) {
+            controller.dismiss(animated: true) { self.onComplete() }
+        }
+    }
+}
+#endif
