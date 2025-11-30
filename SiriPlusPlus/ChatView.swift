@@ -85,6 +85,7 @@ public final class ChatViewModel: ObservableObject {
 // MARK: - ChatView
 public struct ChatView: View {
     @StateObject private var viewModel = ChatViewModel()
+    @StateObject private var calendarViewModel = CalendarViewModel()
 
     public init() {}
 
@@ -164,13 +165,13 @@ public struct ChatView: View {
             headerHero
             quickPrompts
             messageList
-                .frame(maxWidth: 600, alignment: .center)
+                .frame(maxWidth: 600, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .center)
-        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .multilineTextAlignment(.leading)
         .padding(.horizontal, 16)
         .padding(.bottom, 40)
-        .frame(maxWidth: .infinity, minHeight: 820, alignment: .center)
+        .frame(maxWidth: .infinity, minHeight: 820, alignment: .topLeading)
         .padding(12)
     }
 
@@ -199,11 +200,11 @@ public struct ChatView: View {
     // MARK: - Quick Prompts
     private var quickPrompts: some View {
         VStack(spacing: 10) {
-            quickPromptRow(title: "Help me write a product update")
-            quickPromptRow(title: "How does this API work?")
-            quickPromptRow(title: "Summarize the meeting notes")
+            quickPromptRow(title: "Triage my inbox and draft replies for anything urgent")
+            quickPromptRow(title: "Plan my day: calendar, reminders, and travel buffers")
+            quickPromptRow(title: "Order my usual lunch from DoorDash at noon")
         }
-        .frame(maxWidth: 520, alignment: .center)
+        .frame(maxWidth: 460, alignment: .center)
     }
 
     private func quickPromptRow(title: String) -> some View {
@@ -322,7 +323,7 @@ public struct ChatView: View {
                 .font(.subheadline)
 
             feedEmailCard
-            feedCalendarCard
+            CalendarView(viewModel: calendarViewModel)
 
             Spacer()
         }
@@ -392,113 +393,6 @@ Marisa
             .background(.ultraThinMaterial, in: Capsule())
     }
 
-    private var feedCalendarCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 6) {
-                Image(systemName: "calendar.badge.clock")
-                    .foregroundStyle(.primary)
-                Text("See my availability: today")
-                    .font(.footnote.weight(.semibold))
-                Spacer()
-                Image(systemName: "ellipsis")
-                    .foregroundStyle(.secondary)
-            }
-            .foregroundStyle(.secondary)
-
-            Text("Available until 1 PM")
-                .font(.title3.weight(.bold))
-
-            Text("Would you like to create an event for Coffee with Marisa at 11 AM?")
-                .font(.subheadline)
-
-            VStack(spacing: 6) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 18) {
-                        Text("9:41 AM")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text("11 AM")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text("1 PM")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text("3 PM")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Rectangle()
-                        .frame(width: 1)
-                        .foregroundStyle(Color.secondary.opacity(0.25))
-
-                    VStack(spacing: 6) {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(.thinMaterial)
-                            .frame(height: 30)
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.blue.opacity(0.45))
-                            .overlay(
-                                HStack {
-                                    Text("Coffee with Marisa")
-                                        .font(.subheadline.weight(.semibold))
-                                    Spacer()
-                                    Text("Philz Coffee")
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .padding(.horizontal, 12)
-                            )
-                            .frame(height: 40)
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.gray.opacity(0.25))
-                            .overlay(
-                                HStack {
-                                    Text("Meeting with Danny Trinh")
-                                        .font(.subheadline.weight(.semibold))
-                                    Spacer()
-                                    Text("Mars Landing")
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .padding(.horizontal, 12)
-                            )
-                            .frame(height: 40)
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(.thinMaterial)
-                            .frame(height: 28)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .padding(10)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-
-            HStack(spacing: 10) {
-                calendarAction("Create Event")
-                calendarAction("Edit Event")
-                calendarAction("Full Calendar")
-                calendarAction("Dismiss")
-            }
-
-            HStack {
-                Image(systemName: "asterisk.circle")
-                    .font(.caption)
-                Text("More actions")
-                    .font(.caption)
-            }
-            .foregroundStyle(.secondary)
-        }
-        .padding(14)
-        .glassTile()
-    }
-
-    private func calendarAction(_ title: String) -> some View {
-        Text(title)
-            .font(.footnote.weight(.semibold))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial, in: Capsule())
-    }
 }
 
 // MARK: - Fullscreen Background
@@ -513,7 +407,7 @@ private struct FullscreenVisualEffect: View {
 }
 
 // MARK: - Glass Modifiers
-private struct GlassTile: ViewModifier {
+struct GlassTile: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -524,7 +418,7 @@ private struct GlassTile: ViewModifier {
     }
 }
 
-private extension View {
+extension View {
     func glassTile() -> some View { modifier(GlassTile()) }
 }
 
