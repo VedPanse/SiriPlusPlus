@@ -7,14 +7,10 @@ public final class CalendarViewModel: ObservableObject {
     @Published public var isLoading: Bool = false
     @Published public var accessDenied: Bool = false
     @Published public var errorMessage: String?
-    #if canImport(EventKitUI)
-    public var eventStore: EKEventStore { dataManager.eventStore }
-    #endif
-
     private let dataManager: CalendarDataManager
 
-    public init(dataManager: CalendarDataManager = .shared) {
-        self.dataManager = dataManager
+    public init(dataManager: CalendarDataManager? = nil) {
+        self.dataManager = dataManager ?? CalendarDataManager.shared
     }
 
     public func loadCalendarEvents() async {
@@ -40,12 +36,32 @@ public final class CalendarViewModel: ObservableObject {
         isLoading = false
     }
 
-    public func openFirstEventInCalendar() {
-        if let first = events.first {
-            dataManager.openCalendar(at: first.startDate)
-        } else {
-            dataManager.openCalendar(at: Date())
+    public func createEvent(title: String,
+                            startDate: Date,
+                            durationMinutes: Double,
+                            location: String?,
+                            urlString: String?,
+                            notes: String?) async {
+        let duration = durationMinutes * 60
+        let url = urlString.flatMap { URL(string: $0) }
+        do {
+            let created = try await dataManager.createEvent(
+                title: title.isEmpty ? "New Event" : title,
+                date: startDate,
+                duration: duration,
+                location: location?.isEmpty == true ? nil : location,
+                url: url,
+                notes: notes?.isEmpty == true ? nil : notes
+            )
+            events.append(created)
+            events.sort { $0.startDate < $1.startDate }
+        } catch {
+            errorMessage = error.localizedDescription
         }
+    }
+
+    public func openFirstEventInCalendar() {
+        dataManager.openCalendar(at: events.first?.startDate)
     }
 
     public func openCalendarApp() {
@@ -53,13 +69,20 @@ public final class CalendarViewModel: ObservableObject {
     }
 
     #if canImport(EventKitUI)
-    public func prepareEventForEditing() async -> EditableEvent? {
+    public func editFirstEvent() async {
+        guard let first = events.first, let id = first.eventIdentifier else {
+            errorMessage = "No event to edit."
+            return
+        }
+        let newStart = first.startDate
         do {
-            let event = try await dataManager.makeEditableEventForEditing()
-            return EditableEvent(ekEvent: event)
+            let updated = try await dataManager.editEvent(eventID: id, newTitle: first.title, newDate: newStart, newDuration: first.endDate.timeIntervalSince(first.startDate))
+            if let idx = events.firstIndex(where: { $0.eventIdentifier == id }) {
+                events[idx] = updated
+            }
+            events.sort { $0.startDate < $1.startDate }
         } catch {
             errorMessage = error.localizedDescription
-            return nil
         }
     }
     #endif

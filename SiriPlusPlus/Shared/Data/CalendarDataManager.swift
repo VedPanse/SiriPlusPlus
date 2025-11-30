@@ -6,12 +6,10 @@ import AppKit
 import UIKit
 #endif
 
+@MainActor
 public final class CalendarDataManager {
     public static let shared = CalendarDataManager()
     private let eventStore = EKEventStore()
-    #if canImport(EventKitUI)
-    public var eventStoreForUI: EKEventStore { eventStore }
-    #endif
 
     private init() {}
 
@@ -80,15 +78,22 @@ public final class CalendarDataManager {
         }
     }
 
-    public func createQuickEvent(title: String, startDate: Date, endDate: Date, location: String?) async throws -> UserCalendarEvent {
+    public func createEvent(title: String,
+                            date: Date,
+                            duration: TimeInterval,
+                            location: String?,
+                            url: URL?,
+                            notes: String?) async throws -> UserCalendarEvent {
         try await ensureAccess()
         let event = EKEvent(eventStore: eventStore)
         event.title = title
-        event.startDate = startDate
-        event.endDate = endDate
+        event.startDate = date
+        event.endDate = date.addingTimeInterval(duration)
         event.location = location
+        event.url = url
+        event.notes = notes
         event.calendar = eventStore.defaultCalendarForNewEvents
-        try eventStore.save(event, span: .thisEvent, commit: true)
+        try eventStore.save(event, span: .thisEvent)
         return UserCalendarEvent(
             eventIdentifier: event.eventIdentifier,
             title: event.title,
@@ -98,25 +103,34 @@ public final class CalendarDataManager {
         )
     }
 
-    public func openCalendar(at date: Date?) {
-        let target = date ?? Date()
-        let interval = target.timeIntervalSinceReferenceDate
-        guard let url = URL(string: "calshow:\(interval)") else { return }
-        #if os(macOS)
-        NSWorkspace.shared.open(url)
-        #else
-        UIApplication.shared.open(url)
-        #endif
+    public func editEvent(eventID: String, newTitle: String, newDate: Date, newDuration: TimeInterval) async throws -> UserCalendarEvent {
+        try await ensureAccess()
+        guard let ekEvent = eventStore.event(withIdentifier: eventID) else {
+            throw CalendarAccessError.eventNotFound
+        }
+        ekEvent.title = newTitle
+        ekEvent.startDate = newDate
+        ekEvent.endDate = newDate.addingTimeInterval(newDuration)
+        try eventStore.save(ekEvent, span: .thisEvent)
+        return UserCalendarEvent(
+            eventIdentifier: ekEvent.eventIdentifier,
+            title: ekEvent.title,
+            startDate: ekEvent.startDate,
+            endDate: ekEvent.endDate,
+            location: ekEvent.location
+        )
     }
 
-    #if canImport(EventKitUI)
-    public func makeEditableEventForEditing() async throws -> EKEvent {
-        try await ensureAccess()
-        let event = EKEvent(eventStore: eventStore)
-        event.calendar = eventStore.defaultCalendarForNewEvents
-        return event
+    public func openCalendar(at date: Date?) {
+        #if os(macOS)
+        let appURL = URL(fileURLWithPath: "/System/Applications/Calendar.app")
+        NSWorkspace.shared.openApplication(at: appURL, configuration: NSWorkspace.OpenConfiguration(), completionHandler: nil)
+        #else
+        if let url = URL(string: "calshow://") {
+            UIApplication.shared.open(url)
+        }
+        #endif
     }
-    #endif
 
     private func ensureAccess() async throws {
         let granted = try await requestAccessIfNeeded()
@@ -138,11 +152,14 @@ private extension Date {
 // MARK: - Errors
 public enum CalendarAccessError: LocalizedError {
     case accessDenied
+    case eventNotFound
 
     public var errorDescription: String? {
         switch self {
         case .accessDenied:
             return "Calendar access is needed to display events. Please enable it in System Settings."
+        case .eventNotFound:
+            return "Could not find the calendar event to edit."
         }
     }
 }

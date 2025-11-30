@@ -2,9 +2,13 @@ import SwiftUI
 
 public struct CalendarView: View {
     @ObservedObject var viewModel: CalendarViewModel
-    #if canImport(EventKitUI)
-    @State private var editingEvent: EditableEvent?
-    #endif
+    @State private var showCreateSheet = false
+    @State private var newTitle: String = ""
+    @State private var newStartDate: Date = Date()
+    @State private var newDurationMinutes: Double = 30
+    @State private var newLocation: String = ""
+    @State private var newURL: String = ""
+    @State private var newNotes: String = ""
 
     public init(viewModel: CalendarViewModel) {
         self.viewModel = viewModel
@@ -41,14 +45,9 @@ public struct CalendarView: View {
         .task {
             await viewModel.loadCalendarEvents()
         }
-        #if canImport(EventKitUI)
-        .sheet(item: $editingEvent) { wrapper in
-            EventEditView(event: wrapper.ekEvent, store: viewModel.eventStore) {
-                editingEvent = nil
-                Task { await viewModel.loadCalendarEvents() }
-            }
+        .sheet(isPresented: $showCreateSheet) {
+            createSheet
         }
-        #endif
     }
 
     private var header: some View {
@@ -73,65 +72,104 @@ public struct CalendarView: View {
     }
 
     private var timeline: some View {
-        VStack(spacing: 6) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 18) {
-                    ForEach(timeMarkers, id: \.self) { marker in
-                        Text(marker)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+        GeometryReader { _ in
+            ZStack(alignment: .topLeading) {
+                hourGrid
+                ForEach(viewModel.events) { event in
+                    eventBlock(for: event)
                 }
-
-                Rectangle()
-                    .frame(width: 1)
-                    .foregroundStyle(Color.secondary.opacity(0.25))
-
-                VStack(spacing: 6) {
-                    ForEach(viewModel.events) { event in
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(eventFill(for: event))
-                            .overlay(eventLabel(for: event).padding(.horizontal, 12))
-                            .frame(height: blockHeight(for: event))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .strokeBorder(isOngoing(event: event) ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.08),
-                                                   lineWidth: isOngoing(event: event) ? 2 : 1)
-                            )
-                    }
-                }
-                .frame(maxWidth: .infinity)
             }
+            .frame(height: hourHeight * CGFloat(hourMarkers.count))
             .padding(10)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
+        .frame(height: hourHeight * CGFloat(hourMarkers.count))
     }
 
     private var actions: some View {
         HStack(spacing: 10) {
-            Button {
+            CreateEventButton {
+                newStartDate = Date()
+                showCreateSheet = true
+            }
+            EditEventButton {
                 #if canImport(EventKitUI)
-                Task {
-                    if let wrapper = await viewModel.prepareEventForEditing() {
-                        editingEvent = wrapper
-                    }
-                }
+                Task { await viewModel.editFirstEvent() }
                 #else
                 viewModel.openCalendarApp()
                 #endif
-            } label: { calendarActionLabel("Create Event") }
-            .buttonStyle(.plain)
-
-            Button {
-                viewModel.openFirstEventInCalendar()
-            } label: { calendarActionLabel("Edit Event") }
-            .buttonStyle(.plain)
-
-            Button {
+            }
+            ShowFullCalendarButton {
                 viewModel.openCalendarApp()
-            } label: { calendarActionLabel("Full Calendar") }
-            .buttonStyle(.plain)
+            }
         }
+        .padding(.top, 12)
+    }
+
+    private var createSheet: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Details")
+                            .font(.headline)
+                        TextField("Title", text: $newTitle)
+                        TextField("Location", text: $newLocation)
+                        TextField("URL", text: $newURL)
+                        TextField("Notes", text: $newNotes, axis: .vertical)
+                    }
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Timing")
+                            .font(.headline)
+                        DatePicker("Start", selection: $newStartDate, displayedComponents: [.date, .hourAndMinute])
+                        Stepper(value: $newDurationMinutes, in: 5...240, step: 5) {
+                            Text("Duration: \(Int(newDurationMinutes)) min")
+                        }
+                    }
+                }
+                .padding()
+            }
+            #if os(macOS)
+            .background(Color(NSColor.windowBackgroundColor))
+            #else
+            .background(Color(UIColor.systemBackground))
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showCreateSheet = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") {
+                        let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let location = newLocation.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let url = newURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let notes = newNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+                        Task {
+                            await viewModel.createEvent(
+                                title: title,
+                                startDate: newStartDate,
+                                durationMinutes: newDurationMinutes,
+                                location: location,
+                                urlString: url,
+                                notes: notes
+                            )
+                            showCreateSheet = false
+                            resetCreateFields()
+                        }
+                    }
+                    .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+
+    private func resetCreateFields() {
+        newTitle = ""
+        newLocation = ""
+        newURL = ""
+        newNotes = ""
+        newDurationMinutes = 30
+        newStartDate = Date()
     }
 
     private var footer: some View {
@@ -146,11 +184,11 @@ public struct CalendarView: View {
 
     private func eventFill(for event: UserCalendarEvent) -> some ShapeStyle {
         if isOngoing(event: event) {
-            return Color.accentColor.opacity(0.45)
+            return Color.accentColor
         } else if let location = event.location, location.lowercased().contains("coffee") {
-            return Color.blue.opacity(0.45)
+            return Color.blue
         }
-        return Color.gray.opacity(0.25)
+        return Color.gray
     }
 
     private func eventLabel(for event: UserCalendarEvent) -> some View {
@@ -176,19 +214,6 @@ public struct CalendarView: View {
         return CGFloat(min(max(minutes * 0.8, 32), 90))
     }
 
-    private var timeMarkers: [String] {
-        guard let first = viewModel.events.first?.startDate else {
-            return ["9:00 AM", "11:00 AM", "1:00 PM", "3:00 PM"]
-        }
-        let calendar = Calendar.current
-        let baseHour = calendar.component(.hour, from: first)
-        let markers = [0, 2, 4, 6].compactMap { offset -> String? in
-            guard let date = calendar.date(byAdding: .hour, value: offset, to: first) else { return nil }
-            return timeFormatter.string(from: date)
-        }
-        return markers
-    }
-
     private var availabilityHeadline: String {
         guard let next = viewModel.events.first else { return "Available today" }
         let start = timeFormatter.string(from: next.startDate)
@@ -206,14 +231,6 @@ public struct CalendarView: View {
         "\(timeFormatter.string(from: event.startDate)) – \(timeFormatter.string(from: event.endDate))"
     }
 
-    private func calendarActionLabel(_ title: String) -> some View {
-        Text(title)
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-    }
-
     private func isOngoing(event: UserCalendarEvent) -> Bool {
         let now = Date()
         return now >= event.startDate && now <= event.endDate
@@ -225,6 +242,64 @@ public struct CalendarView: View {
         formatter.timeStyle = .short
         return formatter
     }
+
+    private var hourFormatter: DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h a"
+        return formatter
+    }
+
+    private var hourMarkers: [Date] {
+        let start = startOfDay(for: Date())
+        return (0..<24).compactMap { Calendar.current.date(byAdding: .hour, value: $0, to: start) }
+    }
+
+    private var hourHeight: CGFloat { 42 }
+
+    private var hourGrid: some View {
+        VStack(spacing: 0) {
+            ForEach(hourMarkers, id: \.self) { mark in
+                HStack {
+                    Text(hourFormatter.string(from: mark))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 54, alignment: .leading)
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.2))
+                        .frame(height: 1)
+                        .padding(.trailing, 8)
+                }
+                .frame(height: hourHeight, alignment: .top)
+            }
+        }
+    }
+
+    private func eventBlock(for event: UserCalendarEvent) -> some View {
+        let offset = offsetForEvent(event)
+        let height = blockHeight(for: event)
+        return RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(eventFill(for: event))
+            .overlay(eventLabel(for: event).padding(.horizontal, 12))
+            .frame(height: height)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(isOngoing(event: event) ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.08),
+                                   lineWidth: isOngoing(event: event) ? 2 : 1)
+            )
+            .padding(.leading, 58)
+            .offset(y: offset)
+    }
+
+    private func offsetForEvent(_ event: UserCalendarEvent) -> CGFloat {
+        let startOfDay = startOfDay(for: event.startDate)
+        let minutesFromStart = event.startDate.timeIntervalSince(startOfDay) / 60
+        let pointsPerMinute = hourHeight / 60
+        return CGFloat(minutesFromStart) * pointsPerMinute
+    }
+}
+
+func startOfDay(for date: Date) -> Date {
+    Calendar.current.startOfDay(for: date)
 }
 
 #if canImport(EventKitUI)
