@@ -13,5 +13,8 @@ struct SiriPlusPlusApp: App {
         WindowGroup {
             ContentView()
         }
+        #if os(macOS)
+        .defaultSize(width: 1280, height: 900)
+        #endif
     }
 }

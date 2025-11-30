@@ -30,6 +30,8 @@ public final class ChatViewModel: ObservableObject {
     @Published public var inputText: String = ""
     @Published public var isProcessing: Bool = false
     @Published public var errorMessage: String?
+    @available(iOS 18.0, macOS 15.0, *)
+    private var liveSession: LanguageModelSession?
 
     public init() {}
 
@@ -61,9 +63,12 @@ public final class ChatViewModel: ObservableObject {
             defer { isProcessing = false }
 
             do {
-                let session = LanguageModelSession()
-                let response = try await session.respond(to: prompt)
-                messages.append(Message(role: .assistant, text: response.content))
+                if liveSession == nil {
+                    liveSession = LanguageModelSession()
+                }
+                let response = try await liveSession?.respond(to: prompt)
+                let text = response?.content ?? "No response"
+                messages.append(Message(role: .assistant, text: text))
             } catch {
                 let fallback = error.localizedDescription
                 errorMessage = fallback
@@ -80,6 +85,9 @@ public final class ChatViewModel: ObservableObject {
 // MARK: - ChatView
 public struct ChatView: View {
     @StateObject private var viewModel = ChatViewModel()
+    @State private var enableGPT4 = true
+    @State private var enableBERT = false
+    @State private var enableLlama = false
 
     public init() {}
 
@@ -90,58 +98,100 @@ public struct ChatView: View {
 
             #if os(macOS)
             macOSLayout
-                .frame(minWidth: 420, idealWidth: 480, maxWidth: 540)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(20)
             #else
             iOSLayout
-                .padding(.horizontal)
-                .padding(.top, 12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.horizontal, 18)
+                .padding(.top, 18)
             #endif
         }
     }
 
     @ViewBuilder
     private var macOSLayout: some View {
-        HStack(spacing: 0) {
-            ZStack {
-                BlurContainer(material: .hudWindow, blendingMode: .withinWindow)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(Color.white.opacity(0.08))
-                    )
-                    .shadow(color: Color.black.opacity(0.35), radius: 18, x: 0, y: 10)
-                chatStack
-                    .padding(18)
-            }
-            .frame(maxWidth: 520)
+        HStack(alignment: .top, spacing: 16) {
+            mainGlassCard
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .layoutPriority(1)
 
-            Divider()
-
-            ZStack {
-                BlurContainer(material: .sidebar, blendingMode: .behindWindow)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                Text("Context Panel")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-            }
+            sidePanel
+                .frame(width: 320, alignment: .top)
         }
-        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(.trailing, 12)
         .background(Color.clear)
     }
 
     @ViewBuilder
     private var iOSLayout: some View {
         VStack(spacing: 12) {
-            chatStack
-                .padding(18)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.white.opacity(0.1))
-                )
-                .shadow(color: Color.black.opacity(0.2), radius: 12, x: 0, y: 6)
+            mainGlassCard
+                .frame(maxWidth: .infinity, alignment: .top)
         }
+        .frame(maxWidth: .infinity, alignment: .top)
+    }
+
+    // MARK: - Main Glass Card
+    private var mainGlassCard: some View {
+        VStack(spacing: 18) {
+            headerHero
+            quickPrompts
+            chatStack
+        }
+        .padding(22)
+        .glassCard()
+    }
+
+    // MARK: - Header
+    private var headerHero: some View {
+        VStack(spacing: 12) {
+            Image("siripp")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 96, height: 96)
+                .shadow(color: Color.black.opacity(0.25), radius: 16, x: 0, y: 8)
+
+            Text("Transform Your Ideas with Siri++")
+                .font(.title)
+                .fontWeight(.semibold)
+                .multilineTextAlignment(.center)
+
+            Text("Ask, summarize, and generate with an on-device model. Your data stays private.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Quick Prompts
+    private var quickPrompts: some View {
+        VStack(spacing: 10) {
+            quickPromptRow(title: "Help me write a product update")
+            quickPromptRow(title: "How does this API work?")
+            quickPromptRow(title: "Summarize the meeting notes")
+        }
+    }
+
+    private func quickPromptRow(title: String) -> some View {
+        Button {
+            viewModel.inputText = title
+            viewModel.sendMessage()
+        } label: {
+            HStack {
+                Text(title)
+                    .foregroundStyle(.primary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .glassTile()
+        }
+        .buttonStyle(.plain)
     }
 
     private var chatStack: some View {
@@ -165,17 +215,24 @@ public struct ChatView: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("Message", text: $viewModel.inputText, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(1...6)
-                    .onSubmit { viewModel.sendMessage() }
-
-                Button(action: viewModel.sendMessage) {
-                    Image(systemName: "paperplane.fill")
-                        .font(.system(size: 16, weight: .semibold))
+                HStack(spacing: 10) {
+                    Image(systemName: "mic.fill")
+                        .foregroundStyle(.secondary)
+                    TextField("Ask anything…", text: $viewModel.inputText, axis: .vertical)
+                        .lineLimit(1...6)
+                        .textFieldStyle(.plain)
+                        .submitLabel(.send)
+                        .onSubmit { viewModel.sendMessage() }
+                    Button(action: viewModel.sendMessage) {
+                        Image(systemName: "paperplane.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .glassTile()
             }
 
             if viewModel.isProcessing {
@@ -214,39 +271,136 @@ public struct ChatView: View {
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
         .padding(.vertical, 2)
     }
+
+    // MARK: - Side Panel
+    private var sidePanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Personal Cognition")
+                        .font(.headline)
+                    Label("2 sources connected", systemImage: "bolt.horizontal.fill")
+                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                }
+                Spacer()
+                Image(systemName: "brain.head.profile")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+            }
+
+            GlassButton(label: "Preferences", systemImage: "gearshape.fill") {}
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("General Knowledge")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                toggleRow(title: "GPT-4", isOn: $enableGPT4)
+                toggleRow(title: "BERT", isOn: $enableBERT)
+                toggleRow(title: "Llama", isOn: $enableLlama)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Integrations")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                integrationRow(title: "Notion", status: "Manage")
+                integrationRow(title: "Google Drive", status: "Connect")
+                integrationRow(title: "Asana", status: "Connect")
+                integrationRow(title: "Jira", status: "Connect")
+            }
+
+            Spacer()
+        }
+        .padding(18)
+        .glassCard()
+    }
+
+    private func toggleRow(title: String, isOn: Binding<Bool>) -> some View {
+        HStack {
+            Label(title, systemImage: "bolt.fill")
+            Spacer()
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .glassTile()
+    }
+
+    private func integrationRow(title: String, status: String) -> some View {
+        HStack {
+            Label(title, systemImage: "link")
+            Spacer()
+            Text(status)
+                .font(.footnote.weight(.semibold))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.accentColor.opacity(0.15), in: Capsule())
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .glassTile()
+    }
 }
 
 // MARK: - Fullscreen Background
 private struct FullscreenVisualEffect: View {
     var body: some View {
         #if os(macOS)
-        ZStack {
-            BlurContainer(material: .hudWindow, blendingMode: .behindWindow)
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(0.18),
-                    Color.accentColor.opacity(0.1),
-                    Color.black.opacity(0.12)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .blendMode(.plusLighter)
-        }
+        BlurContainer(material: .hudWindow, blendingMode: .behindWindow)
         #else
-        ZStack {
-            Rectangle().fill(.ultraThinMaterial)
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(0.08),
-                    Color.accentColor.opacity(0.12)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .blur(radius: 24)
-        }
+        Rectangle().fill(.ultraThinMaterial)
         #endif
+    }
+}
+
+// MARK: - Glass Modifiers
+private struct GlassCard: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(Color.white.opacity(0.12))
+            )
+            .shadow(color: Color.black.opacity(0.25), radius: 18, x: 0, y: 10)
+    }
+}
+
+private struct GlassTile: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.white.opacity(0.08))
+            )
+    }
+}
+
+private extension View {
+    func glassCard() -> some View { modifier(GlassCard()) }
+    func glassTile() -> some View { modifier(GlassTile()) }
+}
+
+// MARK: - Glass Button
+private struct GlassButton: View {
+    var label: String
+    var systemImage: String
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                Label(label, systemImage: systemImage)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .glassTile()
+        }
+        .buttonStyle(.plain)
     }
 }
 
