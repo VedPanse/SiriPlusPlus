@@ -60,6 +60,11 @@ public final class CalendarDataManager {
         }
     }
 
+    public func fetchCalendars() async throws -> [EKCalendar] {
+        _ = try await requestAccessIfNeeded()
+        return eventStore.calendars(for: .event)
+    }
+
     public func fetchEventsForToday() async throws -> [UserCalendarEvent] {
         let start = Date.now.startOfDay()
         let end = Date.now.endOfDay()
@@ -79,20 +84,41 @@ public final class CalendarDataManager {
     }
 
     public func createEvent(title: String,
-                            date: Date,
-                            duration: TimeInterval,
+                            startDate: Date,
+                            endDate: Date,
+                            isAllDay: Bool,
+                            calendar: EKCalendar?,
+                            alert: AlertOption,
+                            repeatRule: RepeatFrequency,
+                            travelTime: TravelTimeOption,
                             location: String?,
                             url: URL?,
                             notes: String?) async throws -> UserCalendarEvent {
         try await ensureAccess()
         let event = EKEvent(eventStore: eventStore)
         event.title = title
-        event.startDate = date
-        event.endDate = date.addingTimeInterval(duration)
+        event.startDate = startDate
+        event.endDate = endDate
+        event.isAllDay = isAllDay
         event.location = location
         event.url = url
         event.notes = notes
-        event.calendar = eventStore.defaultCalendarForNewEvents
+        event.calendar = calendar ?? eventStore.defaultCalendarForNewEvents
+
+        if let minutes = alert.minutesBefore {
+            event.alarms = [EKAlarm(relativeOffset: TimeInterval(-minutes * 60))]
+        }
+
+        if let rule = recurrenceRule(for: repeatRule) {
+            event.recurrenceRules = [rule]
+        }
+
+        #if os(iOS)
+        if let minutes = travelTime.minutes {
+            event.travelTime = TimeInterval(minutes * 60)
+        }
+        #endif
+
         try eventStore.save(event, span: .thisEvent)
         return UserCalendarEvent(
             eventIdentifier: event.eventIdentifier,
@@ -161,5 +187,20 @@ public enum CalendarAccessError: LocalizedError {
         case .eventNotFound:
             return "Could not find the calendar event to edit."
         }
+    }
+}
+
+private func recurrenceRule(for freq: RepeatFrequency) -> EKRecurrenceRule? {
+    switch freq {
+    case .none:
+        return nil
+    case .daily:
+        return EKRecurrenceRule(recurrenceWith: .daily, interval: 1, end: nil)
+    case .weekly:
+        return EKRecurrenceRule(recurrenceWith: .weekly, interval: 1, end: nil)
+    case .monthly:
+        return EKRecurrenceRule(recurrenceWith: .monthly, interval: 1, end: nil)
+    case .yearly:
+        return EKRecurrenceRule(recurrenceWith: .yearly, interval: 1, end: nil)
     }
 }

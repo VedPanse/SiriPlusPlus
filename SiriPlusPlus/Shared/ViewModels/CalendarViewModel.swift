@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import EventKit
 
 @MainActor
 public final class CalendarViewModel: ObservableObject {
@@ -7,10 +8,18 @@ public final class CalendarViewModel: ObservableObject {
     @Published public var isLoading: Bool = false
     @Published public var accessDenied: Bool = false
     @Published public var errorMessage: String?
+    @Published public var availableCalendars: [EKCalendar] = []
+    @Published public var selectedCalendar: EKCalendar?
+    @Published public var selectedAlertOption: AlertOption = .none
+    @Published public var repeatFrequency: RepeatFrequency = .none
+    @Published public var travelTime: TravelTimeOption = .none
+    @Published public var isAllDay: Bool = false
+    @Published public var newEndDate: Date = Date().addingTimeInterval(3600)
     private let dataManager: CalendarDataManager
 
     public init(dataManager: CalendarDataManager? = nil) {
         self.dataManager = dataManager ?? CalendarDataManager.shared
+        Task { await loadCalendars() }
     }
 
     public func loadCalendarEvents() async {
@@ -38,7 +47,13 @@ public final class CalendarViewModel: ObservableObject {
 
     public func createEvent(title: String,
                             startDate: Date,
+                            endDate: Date,
+                            isAllDay: Bool,
                             durationMinutes: Double,
+                            calendar: EKCalendar?,
+                            alert: AlertOption,
+                            repeatRule: RepeatFrequency,
+                            travelTime: TravelTimeOption,
                             location: String?,
                             urlString: String?,
                             notes: String?) async {
@@ -47,8 +62,13 @@ public final class CalendarViewModel: ObservableObject {
         do {
             let created = try await dataManager.createEvent(
                 title: title.isEmpty ? "New Event" : title,
-                date: startDate,
-                duration: duration,
+                startDate: startDate,
+                endDate: endDate > startDate ? endDate : startDate.addingTimeInterval(duration),
+                isAllDay: isAllDay,
+                calendar: calendar,
+                alert: alert,
+                repeatRule: repeatRule,
+                travelTime: travelTime,
                 location: location?.isEmpty == true ? nil : location,
                 url: url,
                 notes: notes?.isEmpty == true ? nil : notes
@@ -86,4 +106,16 @@ public final class CalendarViewModel: ObservableObject {
         }
     }
     #endif
+
+    public func loadCalendars() async {
+        do {
+            let calendars = try await dataManager.fetchCalendars()
+            availableCalendars = calendars
+            if selectedCalendar == nil {
+                selectedCalendar = calendars.first
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
 }

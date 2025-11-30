@@ -1,4 +1,8 @@
 import SwiftUI
+import EventKit
+#if os(macOS)
+import AppKit
+#endif
 
 public struct CalendarView: View {
     @ObservedObject var viewModel: CalendarViewModel
@@ -9,6 +13,14 @@ public struct CalendarView: View {
     @State private var newLocation: String = ""
     @State private var newURL: String = ""
     @State private var newNotes: String = ""
+    @State private var isAllDay: Bool = false
+    @State private var newEndDate: Date = Date().addingTimeInterval(3600)
+    @State private var selectedAlertOption: AlertOption = .none
+    @State private var repeatFrequency: RepeatFrequency = .none
+    #if os(macOS)
+    @State private var travelTime: TravelTimeOption = .none
+    #endif
+    @State private var selectedCalendar: EKCalendar?
 
     public init(viewModel: CalendarViewModel) {
         self.viewModel = viewModel
@@ -47,6 +59,10 @@ public struct CalendarView: View {
         }
         .sheet(isPresented: $showCreateSheet) {
             createSheet
+        }
+        .task {
+            await viewModel.loadCalendars()
+            selectedCalendar = viewModel.availableCalendars.first
         }
     }
 
@@ -108,47 +124,112 @@ public struct CalendarView: View {
 
     private var createSheet: some View {
         NavigationView {
-            ScrollView {
-                VStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Details")
-                            .font(.headline)
-                        TextField("Title", text: $newTitle)
-                        TextField("Location", text: $newLocation)
-                        TextField("URL", text: $newURL)
-                        TextField("Notes", text: $newNotes, axis: .vertical)
+            Form {
+                Section {
+                    TextField("Title", text: $newTitle)
+                        .font(.system(size: 18, weight: .semibold))
+                    Toggle("All-Day", isOn: $isAllDay)
+                        .toggleStyle(.switch)
+                }
+
+                Section(header: Text("Starts").font(.headline)) {
+                    DatePicker("", selection: $newStartDate, displayedComponents: isAllDay ? [.date] : [.date, .hourAndMinute])
+                        .datePickerStyle(.compact)
+                }
+
+                Section(header: Text("Ends").font(.headline)) {
+                    DatePicker("", selection: $newEndDate, in: newStartDate...Date.distantFuture, displayedComponents: isAllDay ? [.date] : [.date, .hourAndMinute])
+                        .datePickerStyle(.compact)
+                }
+
+                Section {
+                    Picker("Calendar", selection: Binding(get: {
+                        selectedCalendar ?? viewModel.availableCalendars.first
+                    }, set: { selectedCalendar = $0 })) {
+                        ForEach(viewModel.availableCalendars, id: \.calendarIdentifier) { cal in
+                            Text(cal.title).tag(Optional(cal))
+                        }
                     }
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Timing")
-                            .font(.headline)
-                        DatePicker("Start", selection: $newStartDate, displayedComponents: [.date, .hourAndMinute])
-                        Stepper(value: $newDurationMinutes, in: 5...240, step: 5) {
-                            Text("Duration: \(Int(newDurationMinutes)) min")
+
+                    Picker("Alert", selection: $selectedAlertOption) {
+                        ForEach(AlertOption.allCases, id: \.self) { option in
+                            Text(option.text).tag(option)
                         }
                     }
                 }
-                .padding()
+
+                Section {
+                    Picker("Repeat", selection: $repeatFrequency) {
+                        ForEach(RepeatFrequency.allCases, id: \.self) { option in
+                            Text(option.text).tag(option)
+                        }
+                    }
+                }
+
+                Section(header: Text("Details")) {
+                    TextField("Location", text: $newLocation)
+                    TextField("URL", text: $newURL)
+                    TextField("Notes", text: $newNotes, axis: .vertical)
+                        .lineLimit(3...6)
+                }
+
+                #if os(macOS)
+                Section {
+                    Picker("Travel Time", selection: $travelTime) {
+                        ForEach(TravelTimeOption.allCases, id: \.self) { option in
+                            Text(option.text).tag(option)
+                        }
+                    }
+                }
+                #endif
             }
-            #if os(macOS)
-            .background(Color(NSColor.windowBackgroundColor))
-            #else
-            .background(Color(UIColor.systemBackground))
+            .scrollContentBackground(.hidden)
+            .background(
+                Group {
+                    #if os(macOS)
+                    VisualEffectView(material: .sidebar, blendingMode: .behindWindow)
+                    #else
+                    Color(UIColor.systemGroupedBackground)
+                    #endif
+                }
+                .ignoresSafeArea()
+            )
+            .navigationTitle("New Event")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { showCreateSheet = false }
+                    Button("Cancel") {
+                        showCreateSheet = false
+                        resetCreateFields()
+                    }
                 }
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
                         let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
                         let location = newLocation.trimmingCharacters(in: .whitespacesAndNewlines)
                         let url = newURL.trimmingCharacters(in: .whitespacesAndNewlines)
                         let notes = newNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+
                         Task {
                             await viewModel.createEvent(
                                 title: title,
                                 startDate: newStartDate,
+                                endDate: newEndDate,
+                                isAllDay: isAllDay,
                                 durationMinutes: newDurationMinutes,
+                                calendar: selectedCalendar ?? viewModel.availableCalendars.first,
+                                alert: selectedAlertOption,
+                                repeatRule: repeatFrequency,
+                                travelTime: {
+                                    #if os(macOS)
+                                    travelTime
+                                    #else
+                                    .none
+                                    #endif
+                                }(),
                                 location: location,
                                 urlString: url,
                                 notes: notes
@@ -157,9 +238,10 @@ public struct CalendarView: View {
                             resetCreateFields()
                         }
                     }
-                    .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(newTitle.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+            .frame(minWidth: 460, minHeight: 520)
         }
     }
 
@@ -170,6 +252,13 @@ public struct CalendarView: View {
         newNotes = ""
         newDurationMinutes = 30
         newStartDate = Date()
+        newEndDate = Date().addingTimeInterval(3600)
+        isAllDay = false
+        selectedAlertOption = .none
+        repeatFrequency = .none
+        #if os(macOS)
+        travelTime = .none
+        #endif
     }
 
     private var footer: some View {
@@ -301,6 +390,27 @@ public struct CalendarView: View {
 func startOfDay(for date: Date) -> Date {
     Calendar.current.startOfDay(for: date)
 }
+
+#if os(macOS)
+private struct VisualEffectView: NSViewRepresentable {
+    var material: NSVisualEffectView.Material
+    var blendingMode: NSVisualEffectView.BlendingMode
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
+        nsView.state = .active
+    }
+}
+#endif
 
 #if canImport(EventKitUI)
 import EventKitUI
